@@ -1,1 +1,3 @@
 Schema version 1: SQLAlchemy metadata creates users/samples/batches/evidence/audit. seed_demo initializes the separate invoices fixture table and NOLOGIN query_reader. invoices is the only permitted SQL source. Run `python -m scripts.seed_demo` for repeatable initialization; natural keys preserve user edits.
+
+Schema version 2: adds corrections (单客户运费更正批次：client_key 幂等键、客户/路线范围、每张调整额、申报差额、状态 pending/posted/rejected、试算依据 basis_hash、差额依据 trial JSON、拒绝原因). create_all creates it on seed without touching existing tables; invoices becomes writable only by the correction posting path, while query_reader stays SELECT-only.

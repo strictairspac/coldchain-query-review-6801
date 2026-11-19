@@ -12,13 +12,14 @@
 2. SQL 复核：选择基准，编辑候选，校验后创建独立批次并入 Redis 队列。
 3. 运行历史：跟踪 queued/running/passed/different/failed，失败也保留证据。
 4. 证据详情：真实 EXPLAIN ANALYZE、两侧结果行、SHA-256 摘要、遗漏/新增行和 JSON 下载。
-5. 管理员操作审计：记录写请求、执行账号和 HTTP 结果，包括拒绝请求。
+5. 运费更正：单客户改账先在事务内试算并回滚，按所选结算样本核对差额，全部相符才允许入账；可查看待核、已入账、已拒绝及差额依据。
+6. 管理员操作审计：记录写请求、执行账号和 HTTP 结果，包括拒绝请求。
 
 | 角色 | 主要页面 | 权限与典型动作 |
 |---|---|---|
-| admin 管理员 | 全部页面、审计 | 创建样本/批次、查看/导出结果、查看写操作审计 |
-| operator 操作员 | 四个业务页面 | 登记 SQL、提交后台复核、查看/导出结果；不可查看管理员审计 |
-| viewer 观察员 | 四个业务页面 | 只读与导出；API 层拒绝所有业务写请求 |
+| admin 管理员 | 全部页面、审计 | 创建样本/批次、查看/导出结果、发起并入账运费更正、查看写操作审计 |
+| operator 操作员 | 五个业务页面 | 登记 SQL、提交后台复核、查看/导出结果、发起并入账运费更正；不可查看管理员审计 |
+| viewer 观察员 | 五个业务页面 | 只读与导出；API 层拒绝所有业务写请求 |
 
 ## 快速启动
 
@@ -67,6 +68,14 @@ ORDER BY customer
 
 失败态包括语法/白名单失败（提交前 422）、缺少样本（404）、重名（409）、任务配额（429）、数据库超时/运行错误（批次 failed，保存 error）。正常差异是 different，不当成异常。
 
+## 运费更正：试算、核对与入账
+
+更正是单客户、按路线可选的每张账单固定调额（可为负）。提交时在同一事务内"锁客户 → 记录试算依据 → 执行样本取改前值 → 套用调整 → 执行样本取改后值"，随后整体回滚：试算改动对普通复核、运行历史与其他会话不可见，行锁只落在该客户账单上，其他客户照常写账。样本 SQL 仍走 validate_sql 白名单，并在 query_reader 角色、2500ms 超时、1000 行上限下执行，查询限制与复核一致。
+
+差额口径：样本结果全部数值单元格之和的更正前后差，按两位小数与申报差额核对。全部所选样本相符 → 批次进入待核（pending）；任一不符 → 直接拒绝（rejected）并保留差额依据。入账时重新执行同一试算：若该客户账单的试算依据（SHA-256 摘要）已被并发改账改变，整批拒绝；通过则在同一事务提交账单 UPDATE 与核对凭证（批次记录转 posted），两者同时生效。
+
+幂等：创建凭 client_key 唯一约束去重，重试返回既有批次（200）；入账对已决定批次直接返回现状，不重复改账。响应丢失后用同一 client_key 或重复入账请求重试均安全。状态机：pending（待核）→ posted（已入账）/ rejected（已拒绝），拒绝含原因。
+
 ## 技术栈、结构与本地开发
 
 | 部分 | 实现 |
@@ -77,20 +86,22 @@ ORDER BY customer
 | db / cache | PostgreSQL 16、Redis 7 |
 | auth | JWT 8 小时有效，PBKDF2 SHA-256 加盐密码 |
 
-`backend/src/` 按 config/models/schemas/services/controllers/routes/middlewares/utils/constants 分工；`backend/scripts/seed_demo.py` 管理幂等初始化；`backend/migrations/README.md` 说明 schema v1。`frontend/src/` 按 api/stores/types/components/common/hooks/pages/router/utils/constants 分工。实体链分别为 sample、batch、evidence，各自有模型、schema、服务、路由、API、store 和页面。
+`backend/src/` 按 config/models/schemas/services/controllers/routes/middlewares/utils/constants 分工；`backend/scripts/seed_demo.py` 管理幂等初始化；`backend/migrations/README.md` 说明 schema v1/v2。`frontend/src/` 按 api/stores/types/components/common/hooks/pages/router/utils/constants 分工。实体链分别为 sample、batch、evidence、correction，各自有模型、schema、服务、路由、API、store 和页面。
 
 后端本地：创建虚拟环境并安装 `backend/requirements.txt`，先用 Compose 启动 db/redis，设置本地可达的 DATABASE_URL/REDIS_URL/JWT_SECRET，进入 backend 执行 `uvicorn src.main:app --reload`；worker 需 `/artifacts` 可写目录并执行 `python -m src.worker`。最省事的开发方式是修改源码后 `docker compose up -d --build`。前端通过 Nginx 的 `/api/` 去前缀代理访问后端，禁止双重 `/api/api`。
 
 环境变量：COMPOSE_PROJECT_NAME（容器命名）、FRONTEND_PORT/BACKEND_PORT/DB_PORT（宿主端口）、POSTGRES_PASSWORD（演示库密码）、JWT_SECRET（签名密钥）、SEED_DEMO（默认 true）。后端容器另接收 DATABASE_URL 和 REDIS_URL。5 个服务均有 healthcheck；数据库、Redis、共享证据各自使用命名卷。
 
-共享枚举位置：角色与任务状态在 `backend/src/constants/enums.py` 和 `frontend/src/constants/enums.js`；模型/鉴权服务/worker 消费后端值，状态标签与前端权限消费前端值。源数据 invoice status 为账单业务值 settled/pending，与任务状态独立。
+共享枚举位置：角色与任务状态在 `backend/src/constants/enums.py` 和 `frontend/src/constants/enums.js`；模型/鉴权服务/worker 消费后端值，状态标签与前端权限消费前端值。源数据 invoice status 为账单业务值 settled/pending，与任务状态独立；更正批次状态 pending/posted/rejected 同理独立。
 
 ## 已知边界
 
 - 小型工作流没有样本删除和版本编辑；新口径新建样本/批次，旧记录保持独立。
 - 使用固定业务数据和单实例 worker；不对接生产数据库，不部署生产高可用。
 - 只允许受限 SQL 子集；不支持 CTE、窗口、跨表联接和用户自定义函数。
-- 查询会执行两次（一次 EXPLAIN ANALYZE，一次取结果）；数据源固定只读，避免两次间口径变化。
+- 查询会执行两次（一次 EXPLAIN ANALYZE，一次取结果）；复核执行在单事务内，不受更正改账影响。
+- invoices 仅由运费更正入账路径写入（试算一律回滚）；query_reader 角色保持只读，复核口径不变。
+- 更正差额按"样本全部数值单元格之和的差"核对；全局聚合样本（如路线均值）受其他客户并发写影响时，入账复核会保守拒绝。
 - 后端迁移/seed 角色为本地数据库管理员；执行用户 SQL 时强制切换受限只读角色。生产应拆分独立迁移凭据。
 - Web 字体来自 Google Fonts，离线会使用 serif/monospace 回退；不影响功能。
 

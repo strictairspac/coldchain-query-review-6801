@@ -5,6 +5,7 @@ from src.models.sample import Sample
 from src.models.batch import Batch
 from src.models.evidence import Evidence
 from src.models.audit import Audit
+from src.models.correction import Correction
 from src.utils.password import hash_password
 ORIGINAL="SELECT DISTINCT i.customer, (SELECT SUM(j.amount) FROM invoices j WHERE j.customer=i.customer AND j.temperature<=8) AS total FROM invoices i WHERE (SELECT SUM(k.amount) FROM invoices k WHERE k.customer=i.customer AND k.temperature<=8)>100 ORDER BY customer"
 def seed():
@@ -22,5 +23,5 @@ def seed():
         for name,desc,sql in samples:
             if not db.scalar(select(Sample).where(Sample.name==name)):db.add(Sample(name=name,description=desc,original_sql=sql))
         db.commit()
-        return {t:db.execute(text('SELECT COUNT(*) FROM '+t)).scalar() for t in ('users','samples','batches','evidence','invoices')}
+        return {t:db.execute(text('SELECT COUNT(*) FROM '+t)).scalar() for t in ('users','samples','batches','evidence','invoices','corrections')}
 if __name__=='__main__':print(seed())

@@ -32,3 +32,6 @@ target/
 *.o
 *.obj
 .DS_Store
+
+# 批次验证产物（gb-4101）不进入源码
+test-artifacts/

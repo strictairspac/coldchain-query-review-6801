@@ -1,0 +1,1 @@
+import{api,post}from'./client.js';export const listCorrections=()=>api('/corrections');export const correctionOptions=()=>api('/corrections/options');export const createCorrection=data=>post('/corrections',data);export const postCorrection=id=>post('/corrections/'+id+'/post',{});
